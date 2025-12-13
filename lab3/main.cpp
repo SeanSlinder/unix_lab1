@@ -3,9 +3,8 @@
 #include <unordered_map>
 #include <vector>
 #include <fstream>
-#include <cstring>
+#include <algorithm>
 #include <sys/stat.h>
-#include <unistd.h>
 #include <openssl/sha.h>
 
 
