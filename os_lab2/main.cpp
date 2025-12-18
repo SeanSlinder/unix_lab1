@@ -1,5 +1,4 @@
 #define _POSIX_C_SOURCE 200809L
-
 #include <arpa/inet.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -18,14 +17,7 @@ static volatile sig_atomic_t g_hup = 0;
 
 static void on_hup(int signo) {
     (void)signo;
-    g_hup = 1;               // async-signal-safe
-}
-
-static int set_nonblock(int fd) {
-    int flags = fcntl(fd, F_GETFL, 0);
-    if (flags < 0) return -1;
-    if (fcntl(fd, F_SETFL, flags | O_NONBLOCK) < 0) return -1;
-    return 0;
+    g_hup = 1;
 }
 
 static int set_cloexec(int fd) {
@@ -43,7 +35,7 @@ static void xwritef(const char *fmt, ...) {
     va_end(ap);
     if (n < 0) return;
     if (n > (int)sizeof buf) n = (int)sizeof buf;
-    (void)write(STDOUT_FILENO, buf, (size_t)n); // write() безопаснее stdio в смысле простоты
+    (void)write(STDOUT_FILENO, buf, (size_t)n);
 }
 
 static int make_listen_socket(uint16_t port) {
@@ -69,10 +61,7 @@ static int make_listen_socket(uint16_t port) {
         close(fd);
         return -1;
     }
-    if (set_nonblock(fd) < 0) {
-        close(fd);
-        return -1;
-    }
+    // БЕЗ set_nonblock() — сокет блокирующий
     return fd;
 }
 
@@ -87,7 +76,6 @@ int main(int argc, char **argv) {
         port = (uint16_t)p;
     }
 
-    // 1) Блокируем SIGHUP ДО установки обработчика и ДО входа в цикл.
     sigset_t block, origmask;
     sigemptyset(&block);
     sigaddset(&block, SIGHUP);
@@ -100,7 +88,7 @@ int main(int argc, char **argv) {
     memset(&sa, 0, sizeof sa);
     sa.sa_handler = on_hup;
     sigemptyset(&sa.sa_mask);
-    sa.sa_flags = 0; // без SA_RESTART: pselect() корректно вернётся с EINTR
+    sa.sa_flags = 0;
     if (sigaction(SIGHUP, &sa, NULL) < 0) {
         perror("sigaction(SIGHUP)");
         return 1;
@@ -115,10 +103,9 @@ int main(int argc, char **argv) {
     xwritef("Listening on port %u. PID=%ld (send: kill -HUP %ld)\n",
             (unsigned)port, (long)getpid(), (long)getpid());
 
-    int cfd = -1; // единственное “оставленное” соединение
+    int cfd = -1;
 
     for (;;) {
-        // 2) Если сигнал уже получен (флаг выставлен), обрабатываем ДО ожидания.
         if (g_hup) {
             g_hup = 0;
             xwritef("[signal] SIGHUP received\n");
@@ -134,35 +121,23 @@ int main(int argc, char **argv) {
             if (cfd > maxfd) maxfd = cfd;
         }
 
-        // 3) Ключевой момент:
-        //    pselect() атомарно подменяет маску на origmask (где SIGHUP НЕ заблокирован)
-        //    и засыпает. После возврата маска восстановится обратно (SIGHUP снова заблокирован).
         int rc = pselect(maxfd + 1, &rfds, NULL, NULL, NULL, &origmask);
 
         if (rc < 0) {
             if (errno == EINTR) {
-                // Разбудил сигнал — на следующей итерации увидим g_hup и выведем сообщение.
                 continue;
             }
             perror("pselect");
             break;
         }
 
-        // 4) Новые подключения: принимаем всё, но держим только одно.
+        // Только ОДНА попытка accept() — блокирующий, будет ждать
         if (FD_ISSET(lfd, &rfds)) {
-            for (;;) {
-                struct sockaddr_in peer;
-                socklen_t peerlen = sizeof peer;
-                int nfd = accept(lfd, (struct sockaddr *)&peer, &peerlen);
-                if (nfd < 0) {
-                    if (errno == EAGAIN || errno == EWOULDBLOCK) break; // всё приняли
-                    if (errno == EINTR) continue;
-                    perror("accept");
-                    break;
-                }
-
+            struct sockaddr_in peer;
+            socklen_t peerlen = sizeof peer;
+            int nfd = accept(lfd, (struct sockaddr *)&peer, &peerlen);
+            if (nfd >= 0) {
                 (void)set_cloexec(nfd);
-                (void)set_nonblock(nfd);
 
                 char ip[INET_ADDRSTRLEN];
                 const char *sip = inet_ntop(AF_INET, &peer.sin_addr, ip, sizeof ip);
@@ -177,10 +152,12 @@ int main(int argc, char **argv) {
                     xwritef("[tcp] closing extra fd=%d\n", nfd);
                     close(nfd);
                 }
+            } else {
+                perror("accept");
             }
         }
 
-        // 5) Данные в “оставленном” соединении.
+        // Чтение из текущего соединения (блокирующее)
         if (cfd >= 0 && FD_ISSET(cfd, &rfds)) {
             char buf[4096];
             ssize_t n = read(cfd, buf, sizeof buf);
@@ -191,13 +168,9 @@ int main(int argc, char **argv) {
                 close(cfd);
                 cfd = -1;
             } else {
-                if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) {
-                    // просто попробуем позже
-                } else {
-                    perror("read");
-                    close(cfd);
-                    cfd = -1;
-                }
+                perror("read");
+                close(cfd);
+                cfd = -1;
             }
         }
     }
