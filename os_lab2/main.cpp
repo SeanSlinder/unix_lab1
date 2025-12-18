@@ -6,7 +6,6 @@
 #include <netinet/in.h>
 #include <signal.h>
 #include <stdarg.h>
-#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -70,7 +69,7 @@ static int make_listen_socket(uint16_t port) {
         close(fd);
         return -1;
     }
-    if (set_nonblock(fd) < 0) { // чтобы accept() можно было “дренировать” без блокировок
+    if (set_nonblock(fd) < 0) {
         close(fd);
         return -1;
     }
