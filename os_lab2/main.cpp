@@ -110,6 +110,7 @@ int main(int argc, char **argv) {
         if (wasSigHup) {
             wasSigHup = 0;
             printf("[signal] SIGHUP received\n");
+            continue;
         }
 
         // Новое подключение
